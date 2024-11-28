@@ -20,7 +20,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Carregar variáveis de ambiente
-load_dotenv('grupo max/db.env')
+load_dotenv('db.env')
 
 # Configuração do MongoDB
 mongo_uri = os.getenv("MONGO_URI")
@@ -48,39 +48,66 @@ def generate_unique_id_from_url(url):
 # Função para processar um único CSV
 def process_single_csv(page_url, db_name, link):
     try:
-        db = client[db_name]
-        collection = db['data']
+        db = client['infrações']
+        collection_name = db_name
+        
+        # Verifica se a coleção já existe
+        if collection_name not in db.list_collection_names():
+            # Cria a coleção como capped (limitada a 1 milhão de documentos)
+            db.create_collection(
+                collection_name, 
+                capped=True, 
+                size=1024 * 1024 * 500,  # Tamanho máximo em bytes (~500 MB, ajuste conforme necessário)
+                max=1000000  # Limite de 1 milhão de documentos
+            )
+            logging.info(f"Coleção '{collection_name}' criada com limite de 1 milhão de documentos.")
+        
+        collection = db[collection_name]
         uniqueid = generate_unique_id_from_url(link)
 
-        #verifica se ja o documento ja foi baixado pelo unique_id
+        # Verifica se o documento já foi baixado pelo unique_id
         if collection.find_one({"unique_id": uniqueid}):
             logging.info(f"Unique ID {uniqueid} já existe no banco de dados '{db_name}'. Ignorando inserção.")
             return
-        
+
         # Baixar e processar o CSV
         csv_response = requests.get(link)
         csv_response.raise_for_status()
         csv_data = StringIO(csv_response.text)
-        csv_reader = csv.DictReader(csv_data, delimiter=';')#por padrão o separador é "." esta especificado como ";"
+        csv_reader = csv.DictReader(csv_data, delimiter=';')  # Por padrão, o separador é ";"
 
         rows = []
-        #limpa os dados para inserir no banco
+        possible_date_columns = ["data", "datainfracao", "data_infracao", "dataevento"]
+
+        # Limpa os dados para inserir no banco
         for row in csv_reader:
             clean_row = {str(k) if k else "undefined_key": v for k, v in row.items()}
-            rows.append(clean_row)
-        #adiciona o source_link e o unique_id no banco
+
+            date_column = next((col for col in possible_date_columns if col in clean_row), None)
+
+            # Se a coluna 'data' existir, destrinchar em ano, mês e dia
+            if date_column and clean_row[date_column]:
+                # Converter e destrinchar a data em ano, mês e dia
+                date_parts = clean_row[date_column].split('-')
+                if len(date_parts) == 3:  # Garantir o formato yyyy-mm-dd
+                    clean_row["ano"] = date_parts[0]
+                    clean_row["mes"] = date_parts[1]
+                    clean_row["dia"] = date_parts[2]
+                    rows.append(clean_row)
+
+        # Adiciona o source_link e o unique_id no banco
         for row in rows:
             row["source_link"] = page_url
             row["unique_id"] = uniqueid
+
         if rows:
-            collection.insert_many(rows) #inerção dos dados
+            collection.insert_many(rows)  # Inserção dos dados
             logging.info(f"{len(rows)} registros inseridos no banco de dados '{db_name}' para o link {link}.")
-            
+
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro ao acessar o CSV do link {link}: {e}", exc_info=True)
     except Exception as e:
         logging.error(f"Erro ao processar o CSV do link {link}: {e}", exc_info=True)
-
 
 # Função para processar todos os CSVs (com multithreading)
 def process_csvs():
@@ -92,7 +119,6 @@ def process_csvs():
         try:
             # Baixar o conteúdo da página
             response = requests.get(page_url)
-            response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
             # Extrair links para arquivos CSV
@@ -100,6 +126,7 @@ def process_csvs():
                 tag['href'] for tag in soup.find_all('a', href=True)
                 if tag['href'].endswith('.csv')
             ]
+            logging.info(csv_links)
 
             # Verifica se há links CSV na página
             if csv_links:
