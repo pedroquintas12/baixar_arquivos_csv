@@ -46,10 +46,11 @@ def generate_unique_id_from_url(url):
         logging.error(f"Não foi possível extrair códigos do link: {url}")
         return None
 # Função para processar um único CSV
-def process_single_csv(page_url, db_name, link):
+def process_single_csv(page_url, db_collection, link):
     try:
-        db = client['infrações']
-        collection_name = db_name
+        db_name = "infrações"
+        db = client[db_name]
+        collection_name = db_collection
         
         # Verifica se a coleção já existe
         if collection_name not in db.list_collection_names():
@@ -57,7 +58,7 @@ def process_single_csv(page_url, db_name, link):
             db.create_collection(
                 collection_name, 
                 capped=True, 
-                size=1024 * 1024 * 500,  # Tamanho máximo em bytes (~500 MB, ajuste conforme necessário)
+                size=1024 * 1024 * 500,  # Tamanho máximo em bytes (~500 MB)
                 max=1000000  # Limite de 1 milhão de documentos
             )
             logging.info(f"Coleção '{collection_name}' criada com limite de 1 milhão de documentos.")
@@ -67,7 +68,7 @@ def process_single_csv(page_url, db_name, link):
 
         # Verifica se o documento já foi baixado pelo unique_id
         if collection.find_one({"unique_id": uniqueid}):
-            logging.info(f"Unique ID {uniqueid} já existe no banco de dados '{db_name}'. Ignorando inserção.")
+            logging.info(f"Unique ID {uniqueid} já existe no banco de dados '{db_collection}'. Ignorando inserção.")
             return
 
         # Baixar e processar o CSV
@@ -102,7 +103,7 @@ def process_single_csv(page_url, db_name, link):
 
         if rows:
             collection.insert_many(rows)  # Inserção dos dados
-            logging.info(f"{len(rows)} registros inseridos no banco de dados '{db_name}' para o link {link}.")
+            logging.info(f"{len(rows)} registros inseridos no banco de dados '{db_collection}' para o link {link}.")
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro ao acessar o CSV do link {link}: {e}", exc_info=True)
