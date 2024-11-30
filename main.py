@@ -45,13 +45,15 @@ def generate_unique_id_from_url(url):
     else:
         logging.error(f"Não foi possível extrair códigos do link: {url}")
         return None
-# Função para processar um único CSV
+# Dicionário para armazenar a ordem de colunas para cada link
+column_orders = {}
+
 def process_single_csv(page_url, db_collection, link):
     try:
         db_name = "infrações"
         db = client[db_name]
         collection_name = db_collection
-        
+
         # Verifica se a coleção já existe
         if collection_name not in db.list_collection_names():
             # Cria a coleção como capped (limitada a 1 milhão de documentos)
@@ -78,23 +80,27 @@ def process_single_csv(page_url, db_collection, link):
         csv_reader = csv.DictReader(csv_data, delimiter=';')  # Por padrão, o separador é ";"
 
         rows = []
-        possible_date_columns = ["data", "datainfracao", "data_infracao", "dataevento"]
+
+        # Verifica ou define a ordem das colunas para o link base
+        if page_url not in column_orders:
+            # Se for o primeiro CSV desse link, define a ordem das colunas
+            column_orders[page_url] = csv_reader.fieldnames
+            logging.info(f"Definida a ordem de colunas para o link '{page_url}': {column_orders[page_url]}")
+        else:
+            # Se já houver uma ordem definida, usa a existente
+            logging.info(f"Usando a ordem de colunas existente para o link '{page_url}': {column_orders[page_url]}")
 
         # Limpa os dados para inserir no banco
         for row in csv_reader:
-            clean_row = {str(k) if k else "undefined_key": v for k, v in row.items()}
+            # Ordena as colunas do row baseado na ordem armazenada para o link
+            ordered_row = {col: row.get(col, None) for col in column_orders[page_url]}
 
-            date_column = next((col for col in possible_date_columns if col in clean_row), None)
+            # Preenche as colunas ausentes com None
+            for col in column_orders[page_url]:
+                if col not in row:
+                    ordered_row[col] = None
 
-            # Se a coluna 'data' existir, destrinchar em ano, mês e dia
-            if date_column and clean_row[date_column]:
-                # Converter e destrinchar a data em ano, mês e dia
-                date_parts = clean_row[date_column].split('-')
-                if len(date_parts) == 3:  # Garantir o formato yyyy-mm-dd
-                    clean_row["ano"] = date_parts[0]
-                    clean_row["mes"] = date_parts[1]
-                    clean_row["dia"] = date_parts[2]
-                    rows.append(clean_row)
+            rows.append(ordered_row)
 
         # Adiciona o source_link e o unique_id no banco
         for row in rows:
@@ -109,6 +115,8 @@ def process_single_csv(page_url, db_collection, link):
         logging.error(f"Erro ao acessar o CSV do link {link}: {e}", exc_info=True)
     except Exception as e:
         logging.error(f"Erro ao processar o CSV do link {link}: {e}", exc_info=True)
+
+
 
 # Função para processar todos os CSVs (com multithreading)
 def process_csvs():
@@ -128,7 +136,7 @@ def process_csvs():
                 if tag['href'].endswith('.csv')
             ]
             logging.info(csv_links)
-
+            
             # Verifica se há links CSV na página
             if csv_links:
                 csv_processed = True
